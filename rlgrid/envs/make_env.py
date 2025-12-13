@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Optional
 
 import gymnasium as gym
-import minigrid
+import minigrid  # ensure MiniGrid envs register
 import numpy as np
 from gymnasium.vector import SyncVectorEnv
 
