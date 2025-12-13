@@ -1,11 +1,13 @@
 from __future__ import annotations
 import argparse
+import os
+import time
 import gymnasium as gym
-import numpy as np
-import minigrid
+import minigrid  # ensure MiniGrid envs register
 
-from rlgrid.envs.make_env import EnvConfig, make_vec_env, make_single_env
+from rlgrid.envs.make_env import EnvConfig, make_vec_env
 from rlgrid.algos import PPO, PPOConfig, A2C, A2CConfig, DQN, DQNConfig, QRDQN, QRDQNConfig
+from rlgrid.common.logging import LogWriter, LogConfig
 
 def main():
     p = argparse.ArgumentParser()
@@ -18,7 +20,37 @@ def main():
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--n-envs", type=int, default=8)
     p.add_argument("--save", type=str, default="")
+    # logging
+    p.add_argument("--logdir", type=str, default="runs")
+    p.add_argument("--run-name", type=str, default="")
+    p.add_argument("--no-tensorboard", action="store_true")
+    p.add_argument("--log-interval", type=int, default=10, help="updates (PPO/A2C) or env-steps (DQN/QRDQN)")
+    p.add_argument("--checkpoint-freq", type=int, default=50000,
+               help="save model checkpoint every N env-steps (0 disables)")
+    p.add_argument("--checkpoint-prefix", type=str, default="",
+               help="optional prefix for checkpoint filenames")
+    
     args = p.parse_args()
+
+
+    base_name = args.run_name or f"{args.algo}_{args.env_id}"
+    ts_subdir = time.strftime("%d-%m-%Y-%H-%M")
+    run_name = os.path.join(base_name, ts_subdir)
+
+    # run_name = args.run_name or f"{args.algo}_{args.env_id}_{int(time.time())}"
+    writer = LogWriter(
+        LogConfig(log_dir=args.logdir, run_name=run_name, tensorboard=(not args.no_tensorboard)),
+        config_payload={
+            "algo": args.algo,
+            "env_id": args.env_id,
+            "policy": args.policy,
+            "obs_mode": args.obs,
+            "total_steps": args.total_steps,
+            "seed": args.seed,
+            "device": args.device,
+            "n_envs": args.n_envs,
+        },
+    )
 
     if args.algo in ["ppo","a2c"]:
         cfg_env = EnvConfig(env_id=args.env_id, seed=args.seed, n_envs=args.n_envs, obs_mode=args.obs)
@@ -30,22 +62,28 @@ def main():
 
     if args.algo == "ppo":
         cfg = PPOConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
-        model = PPO(args.policy, env, cfg)
+        model = PPO(args.policy, env, cfg, writer=writer)
     elif args.algo == "a2c":
         cfg = A2CConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
-        model = A2C(args.policy, env, cfg)
+        model = A2C(args.policy, env, cfg, writer=writer)
     elif args.algo == "dqn":
         cfg = DQNConfig(seed=args.seed, device=args.device)
-        model = DQN(args.policy, env, cfg)
+        model = DQN(args.policy, env, cfg, writer=writer)
     else:
         cfg = QRDQNConfig(seed=args.seed, device=args.device)
-        model = QRDQN(args.policy, env, cfg)
+        model = QRDQN(args.policy, env, cfg, writer=writer)
 
-    model.learn(total_timesteps=args.total_steps)
+    model._checkpoint_freq = int(args.checkpoint_freq)
+    model._checkpoint_prefix = args.checkpoint_prefix or args.algo
+
+    model.learn(total_timesteps=args.total_steps, log_interval=args.log_interval)
 
     if args.save:
         model.save(args.save)
         print(f"Saved to: {args.save}")
+
+    model.close()
+    print(f"Logs in: {os.path.join(args.logdir, run_name)}")
 
 if __name__ == "__main__":
     main()
