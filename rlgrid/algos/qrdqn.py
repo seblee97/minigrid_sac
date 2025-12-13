@@ -5,6 +5,7 @@ import copy
 
 import gymnasium as gym
 import numpy as np
+import time
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -32,8 +33,8 @@ class QRDQNConfig(AlgoConfig):
     kappa: float = 1.0
 
 class QRDQN(BaseAlgorithm):
-    def __init__(self, policy: NetType, env: gym.Env, cfg: QRDQNConfig, policy_kwargs: Optional[dict] = None):
-        super().__init__(env, cfg)
+    def __init__(self, policy: NetType, env: gym.Env, cfg: QRDQNConfig, policy_kwargs: Optional[dict] = None, writer=None):
+        super().__init__(env, cfg, writer=writer)
         self.policy_type = policy
         self.policy_kwargs = policy_kwargs or {}
         obs_shape = env.observation_space.shape
@@ -61,6 +62,7 @@ class QRDQN(BaseAlgorithm):
             a = torch.argmax(q, dim=-1)
         return a.squeeze(0).cpu().numpy()
 
+
     def learn(self, total_timesteps: int, log_interval: int = 200):
         cfg: QRDQNConfig = self.cfg  # type: ignore
         env = self.env
@@ -68,7 +70,8 @@ class QRDQN(BaseAlgorithm):
 
         obs, _ = env.reset(seed=cfg.seed)
         ep_ret = 0.0
-        returns = []
+        ep_len = 0
+        t0 = time.time()
 
         pbar = trange(total_timesteps, desc="QRDQN", leave=True)
         for t in pbar:
@@ -80,37 +83,38 @@ class QRDQN(BaseAlgorithm):
             else:
                 action = int(self.predict(obs, deterministic=True))
 
-            next_obs, reward, terminated, truncated, info = env.step(action)
+            next_obs, reward, terminated, truncated, _ = env.step(action)
             done = bool(terminated or truncated)
 
             self.rb.add(obs, action, reward, float(done), next_obs)
             obs = next_obs
             ep_ret += float(reward)
+            ep_len += 1
 
             if done:
-                returns.append(ep_ret)
-                self.logger.log("rollout/ep_rew_mean", float(np.mean(returns[-50:])))
+                if self.writer is not None:
+                    self.writer.log_episode(self.total_steps, ep_ret, ep_len)
+                self.logger.log("rollout/ep_rew", ep_ret)
+                self.logger.log("rollout/ep_len", ep_len)
                 obs, _ = env.reset()
                 ep_ret = 0.0
+                ep_len = 0
 
-            # train
             if self.total_steps > cfg.learning_starts and self.total_steps % cfg.train_freq == 0:
+                last_loss = None
                 for _ in range(cfg.gradient_steps):
                     o, a, r, d, no = self.rb.sample(cfg.batch_size)
 
-                    # current quantiles: (B,A,N) -> choose action a: (B,N)
                     q_quant = self.q(o)
                     qa = q_quant.gather(1, a.view(-1, 1, 1).expand(-1, 1, cfg.n_quantiles)).squeeze(1)
 
                     with torch.no_grad():
-                        # Double DQN action selection on expectation
                         q_next = self.q(no).mean(dim=-1)
                         next_a = torch.argmax(q_next, dim=1)
                         targ_quant = self.q_targ(no)
                         targ = targ_quant.gather(1, next_a.view(-1, 1, 1).expand(-1, 1, cfg.n_quantiles)).squeeze(1)
-                        target = r.view(-1, 1) + cfg.gamma * (1.0 - d.view(-1, 1)) * targ  # (B,N)
+                        target = r.view(-1, 1) + cfg.gamma * (1.0 - d.view(-1, 1)) * targ
 
-                    # pairwise td errors for quantile regression: (B,N,N')
                     td = target.unsqueeze(1) - qa.unsqueeze(2)
                     loss = huber_quantile_loss(td, self.taus, kappa=cfg.kappa)
 
@@ -118,17 +122,30 @@ class QRDQN(BaseAlgorithm):
                     loss.backward()
                     nn.utils.clip_grad_norm_(self.q.parameters(), cfg.max_grad_norm)
                     self.optim.step()
+                    last_loss = float(loss.detach().cpu().item())
+                if last_loss is not None:
+                    self.logger.log("train/q_loss", last_loss)
 
             if self.total_steps % cfg.target_update_interval == 0:
                 self.q_targ.load_state_dict(self.q.state_dict())
 
+            fps = int(self.total_steps / max(1e-6, (time.time() - t0)))
+            self.logger.log("time/fps", float(fps))
+            self.logger.log("train/epsilon", float(self.eps))
+            self.logger.log("time/total_steps", float(self.total_steps))
+
+            if self.writer is not None and ((t + 1) % log_interval == 0 or t == total_timesteps - 1):
+                self.writer.dump(self.total_steps, self.logger.summary())
+
+            self.maybe_checkpoint(self.total_steps, getattr(self, "_checkpoint_freq", 0),
+                      prefix=getattr(self, "_checkpoint_prefix", "qrdqn"))
+
             if (t + 1) % log_interval == 0:
                 summ = self.logger.summary()
-                pbar.set_postfix({"eps": round(self.eps, 3), "ep_rew": round(summ.get("rollout/ep_rew_mean", 0.0), 3)})
+                pbar.set_postfix({"eps": round(self.eps, 3), "fps": int(summ.get("time/fps", 0.0))})
                 self.logger.reset()
 
         return self
-
     def _get_state(self) -> Dict[str, Any]:
         return {
             "algo": "QRDQN",

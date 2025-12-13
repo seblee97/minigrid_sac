@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 import gymnasium as gym
 import numpy as np
+import time
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -24,8 +25,8 @@ class A2CConfig(AlgoConfig):
     gae_lambda: float = 1.0  # if 1.0, becomes n-step return without GAE-ish smoothing
 
 class A2C(BaseAlgorithm):
-    def __init__(self, policy: PolicyType, env: gym.Env, cfg: A2CConfig, policy_kwargs: Optional[dict] = None):
-        super().__init__(env, cfg)
+    def __init__(self, policy: PolicyType, env: gym.Env, cfg: A2CConfig, policy_kwargs: Optional[dict] = None, writer=None):
+        super().__init__(env, cfg, writer=writer)
         self.policy_type = policy
         self.policy_kwargs = policy_kwargs or {}
         obs_shape = env.single_observation_space.shape if hasattr(env, "single_observation_space") else env.observation_space.shape
@@ -41,24 +42,28 @@ class A2C(BaseAlgorithm):
             a, _, _ = self.ac.act(obs_t, deterministic=deterministic)
         return a.squeeze(0).cpu().numpy()
 
+
     def learn(self, total_timesteps: int, log_interval: int = 10):
         cfg: A2CConfig = self.cfg  # type: ignore
         env = self.env
         obs, _ = env.reset(seed=cfg.seed)
-        ep_info_buffer = []
+
+        global_step = 0
+        t0 = time.time()
+        ep_returns, ep_lengths = [], []
 
         n_updates = total_timesteps // (cfg.n_steps * cfg.n_envs)
         pbar = trange(n_updates, desc="A2C", leave=True)
 
         for update in pbar:
-            obs_buf, act_buf, rew_buf, done_buf, val_buf, logp_buf = [], [], [], [], [], []
+            obs_buf, act_buf, rew_buf, done_buf, val_buf = [], [], [], [], []
 
             for _ in range(cfg.n_steps):
+                global_step += cfg.n_envs
                 obs_t = to_tensor(obs, self.device)
                 logits, values = self.ac.forward(obs_t)
                 dist = CategoricalDist(logits=logits)
                 actions = dist.sample()
-                logp = dist.log_prob(actions)
 
                 next_obs, rewards, terms, truncs, infos = env.step(actions.cpu().numpy())
                 dones = np.logical_or(terms, truncs).astype(np.float32)
@@ -66,22 +71,23 @@ class A2C(BaseAlgorithm):
                 if isinstance(infos, dict) and "final_info" in infos and infos["final_info"] is not None:
                     for fi in infos["final_info"]:
                         if fi is not None and "episode" in fi:
-                            ep_info_buffer.append(fi["episode"])
+                            ep = fi["episode"]
+                            ep_returns.append(float(ep["r"]))
+                            ep_lengths.append(int(ep["l"]))
+                            if self.writer is not None:
+                                self.writer.log_episode(global_step, float(ep["r"]), int(ep["l"]))
 
                 obs_buf.append(obs_t)
                 act_buf.append(actions)
                 rew_buf.append(to_tensor(rewards, self.device))
                 done_buf.append(to_tensor(dones, self.device))
                 val_buf.append(values)
-                logp_buf.append(logp)
-
                 obs = next_obs
 
             with torch.no_grad():
                 last_obs_t = to_tensor(obs, self.device)
                 _, last_values = self.ac.forward(last_obs_t)
 
-            # compute returns (n-step with bootstrap)
             returns = []
             R = last_values
             for t in reversed(range(cfg.n_steps)):
@@ -89,10 +95,8 @@ class A2C(BaseAlgorithm):
                 returns.append(R)
             returns = list(reversed(returns))
 
-            # flatten
             obs_b = torch.cat(obs_buf, dim=0)
             act_b = torch.cat(act_buf, dim=0)
-            logp_b = torch.cat(logp_buf, dim=0)
             val_b = torch.cat(val_buf, dim=0)
             ret_b = torch.cat(returns, dim=0)
 
@@ -110,17 +114,29 @@ class A2C(BaseAlgorithm):
             nn.utils.clip_grad_norm_(self.ac.parameters(), cfg.max_grad_norm)
             self.optim.step()
 
-            if len(ep_info_buffer) > 0:
-                mean_ret = float(np.mean([e["r"] for e in ep_info_buffer[-100:]]))
-                self.logger.log("rollout/ep_rew_mean", mean_ret)
+            fps = int(global_step / max(1e-6, (time.time() - t0)))
+            if ep_returns:
+                self.logger.log("rollout/ep_rew_mean", float(np.mean(ep_returns[-100:])))
+                self.logger.log("rollout/ep_len_mean", float(np.mean(ep_lengths[-100:])))
+            self.logger.log("train/policy_loss", float(policy_loss.detach().cpu().item()))
+            self.logger.log("train/value_loss", float(value_loss.detach().cpu().item()))
+            self.logger.log("train/entropy", float(entropy.detach().cpu().item()))
+            self.logger.log("time/fps", float(fps))
+            self.logger.log("time/total_steps", float(global_step))
+
+            if self.writer is not None and ((update + 1) % log_interval == 0 or update == n_updates - 1):
+                self.writer.dump(global_step, self.logger.summary())
+
+            self.maybe_checkpoint(self.total_steps, getattr(self, "_checkpoint_freq", 0),
+                      prefix=getattr(self, "_checkpoint_prefix", "dqn"))
 
             if (update + 1) % log_interval == 0:
                 summ = self.logger.summary()
-                pbar.set_postfix({k: round(v, 3) for k, v in summ.items() if "ep_rew" in k})
+                pbar.set_postfix({"ep_rew": round(summ.get("rollout/ep_rew_mean", 0.0), 3),
+                                  "fps": int(summ.get("time/fps", 0.0))})
                 self.logger.reset()
 
         return self
-
     def _get_state(self) -> Dict[str, Any]:
         return {
             "algo": "A2C",
