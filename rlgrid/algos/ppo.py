@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
+import time
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -29,8 +30,8 @@ class PPOConfig(AlgoConfig):
     normalize_adv: bool = True
 
 class PPO(BaseAlgorithm):
-    def __init__(self, policy: PolicyType, env: gym.Env, cfg: PPOConfig, policy_kwargs: Optional[dict] = None):
-        super().__init__(env, cfg)
+    def __init__(self, policy: PolicyType, env: gym.Env, cfg: PPOConfig, policy_kwargs: Optional[dict] = None, writer=None):
+        super().__init__(env, cfg, writer=writer)
         self.policy_type = policy
         self.policy_kwargs = policy_kwargs or {}
         obs_shape = env.single_observation_space.shape if hasattr(env, "single_observation_space") else env.observation_space.shape
@@ -47,12 +48,19 @@ class PPO(BaseAlgorithm):
             a, _, _ = self.ac.act(obs_t, deterministic=deterministic)
         return a.squeeze(0).cpu().numpy()
 
+
     def learn(self, total_timesteps: int, log_interval: int = 10):
         cfg: PPOConfig = self.cfg  # type: ignore
         env = self.env
 
         obs, _ = env.reset(seed=cfg.seed)
-        ep_info_buffer = []
+        ep_returns, ep_lengths = [], []
+
+        ep_ret = np.zeros(cfg.n_envs, dtype=np.float32)
+        ep_len = np.zeros(cfg.n_envs, dtype=np.int32)
+
+        global_step = 0
+        t0 = time.time()
 
         n_updates = total_timesteps // (cfg.n_steps * cfg.n_envs)
         pbar = trange(n_updates, desc="PPO", leave=True)
@@ -61,27 +69,42 @@ class PPO(BaseAlgorithm):
             self.buf.pos = 0
             self.buf.full = False
 
-            for step in range(cfg.n_steps):
+            for _ in range(cfg.n_steps):
+                global_step += cfg.n_envs
                 obs_t = to_tensor(obs, self.device)
                 with torch.no_grad():
                     actions, logp, values = self.ac.act(obs_t, deterministic=False)
 
-                actions_np = actions.cpu().numpy()
-                next_obs, rewards, terms, truncs, infos = env.step(actions_np)
+                next_obs, rewards, terms, truncs, infos = env.step(actions.cpu().numpy())
                 dones = np.logical_or(terms, truncs).astype(np.float32)
 
-                # record episode stats
-                if "episode" in infos:
-                    # vector env: infos["episode"] is list/dict depending on wrapper
-                    pass
+                ep_ret += rewards
+                ep_len += 1
+
+                for i in range(cfg.n_envs):
+                    if dones[i]:
+                        r_i = float(ep_ret[i])
+                        l_i = int(ep_len[i])
+                        ep_returns.append(r_i)
+                        ep_lengths.append(l_i)
+                        if self.writer is not None:
+                            self.writer.log_episode(global_step, r_i, l_i)
+                        ep_ret[i] = 0.0
+                        ep_len[i] = 0
+
+
                 if isinstance(infos, dict) and "final_info" in infos and infos["final_info"] is not None:
                     for fi in infos["final_info"]:
                         if fi is not None and "episode" in fi:
-                            ep_info_buffer.append(fi["episode"])
+                            ep = fi["episode"]
+                            ep_returns.append(float(ep["r"]))
+                            ep_lengths.append(int(ep["l"]))
+                            if self.writer is not None:
+                                self.writer.log_episode(global_step, float(ep["r"]), int(ep["l"]))
 
                 self.buf.add(
                     obs=obs,
-                    actions=actions_np,
+                    actions=actions.cpu().numpy(),
                     logp=logp.cpu().numpy(),
                     rewards=rewards,
                     dones=dones,
@@ -89,11 +112,10 @@ class PPO(BaseAlgorithm):
                 )
                 obs = next_obs
 
-            # bootstrap
             with torch.no_grad():
                 last_obs_t = to_tensor(obs, self.device)
                 _, last_values = self.ac.forward(last_obs_t)
-                last_dones = to_tensor(dones, self.device)  # from last step
+                last_dones = to_tensor(dones, self.device)
 
             adv, ret = self.buf.compute_returns_and_advantages(
                 last_values=last_values,
@@ -106,11 +128,11 @@ class PPO(BaseAlgorithm):
             adv_b = adv.reshape(-1)
             ret_b = ret.reshape(-1)
 
-            # PPO epochs
             n_samples = obs_b.shape[0]
             inds = np.arange(n_samples)
 
-            for epoch in range(cfg.n_epochs):
+            last_pg = last_v = last_ent = None
+            for _epoch in range(cfg.n_epochs):
                 np.random.shuffle(inds)
                 for start in range(0, n_samples, cfg.batch_size):
                     mb = inds[start:start+cfg.batch_size]
@@ -132,25 +154,39 @@ class PPO(BaseAlgorithm):
                     nn.utils.clip_grad_norm_(self.ac.parameters(), cfg.max_grad_norm)
                     self.optim.step()
 
-            # logging
-            if len(ep_info_buffer) > 0:
-                mean_ret = float(np.mean([e["r"] for e in ep_info_buffer[-100:]]))
-                mean_len = float(np.mean([e["l"] for e in ep_info_buffer[-100:]]))
-                self.logger.log("rollout/ep_rew_mean", mean_ret)
-                self.logger.log("rollout/ep_len_mean", mean_len)
+                    last_pg = float(pg_loss.detach().cpu().item())
+                    last_v = float(v_loss.detach().cpu().item())
+                    last_ent = float(entropy.detach().cpu().item())
 
+            fps = int(global_step / max(1e-6, (time.time() - t0)))
+            if ep_returns:
+                self.logger.log("rollout/ep_rew_mean", float(np.mean(ep_returns[-100:])))
+                self.logger.log("rollout/ep_len_mean", float(np.mean(ep_lengths[-100:])))
             with torch.no_grad():
-                y_pred = old_values_b
-                y_true = ret_b
-                self.logger.log("train/explained_variance", explained_variance(y_pred, y_true))
+                self.logger.log("train/explained_variance", explained_variance(old_values_b, ret_b))
+
+            if last_pg is not None:
+                self.logger.log("train/policy_loss", last_pg)
+            if last_v is not None:
+                self.logger.log("train/value_loss", last_v)
+            if last_ent is not None:
+                self.logger.log("train/entropy", last_ent)
+
+            self.logger.log("time/fps", float(fps))
+            self.logger.log("time/total_steps", float(global_step))
+
+            if self.writer is not None and ((update + 1) % log_interval == 0 or update == n_updates - 1):
+                self.writer.dump(global_step, self.logger.summary())
+            self.maybe_checkpoint(global_step, getattr(self, "_checkpoint_freq", 0),
+                    prefix=getattr(self, "_checkpoint_prefix", "ppo"))
 
             if (update + 1) % log_interval == 0:
                 summ = self.logger.summary()
-                pbar.set_postfix({k: round(v, 3) for k, v in summ.items() if "ep_rew" in k or "expl" in k})
+                pbar.set_postfix({"ep_rew": round(summ.get("rollout/ep_rew_mean", 0.0), 3),
+                                  "fps": int(summ.get("time/fps", 0.0))})
                 self.logger.reset()
 
         return self
-
     def _get_state(self) -> Dict[str, Any]:
         return {
             "algo": "PPO",
