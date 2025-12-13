@@ -6,6 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from torch.utils.tensorboard import SummaryWriter
 
 class _CSVAppender:
     def __init__(self, path: str):
@@ -76,11 +77,7 @@ class LogWriter:
 
         self._tb = None
         if cfg.tensorboard:
-            try:
-                from torch.utils.tensorboard import SummaryWriter
-                self._tb = SummaryWriter(log_dir=os.path.join(self.run_path, "tb"))
-            except Exception:
-                self._tb = None
+            self._tb = SummaryWriter(log_dir=os.path.join(self.run_path, "tb"))
 
         self._t0 = time.time()
         if config_payload is not None:
@@ -116,6 +113,15 @@ class LogWriter:
                 self._tb.add_scalar("rollout/ep_len", float(ep_len), global_step=step)
             except Exception:
                 pass
+
+    def checkpoint_dir(self) -> str:
+        p = os.path.join(self.run_path, "checkpoints")
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def checkpoint_path(self, step: int, prefix: str = "ckpt") -> str:
+        return os.path.join(self.checkpoint_dir(), f"{prefix}_step_{int(step)}.pt")
+
 
     def close(self) -> None:
         try:
