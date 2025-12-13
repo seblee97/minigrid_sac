@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse
 import gymnasium as gym
+import minigrid
 import numpy as np
 
 from rlgrid.envs.wrappers import make_minigrid_wrapped
