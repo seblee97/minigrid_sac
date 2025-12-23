@@ -171,6 +171,11 @@ def main():
     p.add_argument(
         "--layers", type=str, default="", help="comma-separated layer names to hook; empty = auto"
     )
+    p.add_argument(
+        "--centered",
+        action="store_true",
+        help="use centered cosine similarity (subtract mean before computing similarity)"
+    )
 
     args = p.parse_args()
 
@@ -283,6 +288,7 @@ def main():
             "test_steps": args.test_steps,
             "test_seed": args.test_seed,
             "save_rsa": bool(args.save_rsa),
+            "centered": bool(args.centered),
             "homomorphism_stats": hom_stats,
         },
         "checkpoints_found": [os.path.basename(x) for x in ckpts],
@@ -318,12 +324,8 @@ def main():
             X_all = reps_all.reps[layer]
             X_roll = reps_roll.reps[layer]
 
-            import pdb; pdb.set_trace()
-
-            sim_all = cosine_rsa(X_all)
-            sim_roll = cosine_rsa(X_roll)
-
-            import pdb; pdb.set_trace()
+            sim_all = cosine_rsa(X_all, centered=args.centered)
+            sim_roll = cosine_rsa(X_roll, centered=args.centered)
 
             stats_all = rsa_group_pair_stats(sim_all, groups_all)
             stats_roll = rsa_group_pair_stats(sim_roll, groups_roll)
