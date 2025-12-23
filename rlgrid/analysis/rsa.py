@@ -13,13 +13,18 @@ def _flatten_rep(x: torch.Tensor) -> torch.Tensor:
     return x.flatten(start_dim=1)
 
 
-def cosine_rsa(reps: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+def cosine_rsa(reps: np.ndarray, eps: float = 1e-8, centered: bool = False) -> np.ndarray:
     """
     reps: [N, D] float32/float64
+    centered: if True, subtract mean from each vector before computing cosine similarity
     returns: [N, N] cosine similarity matrix
     """
-    import pdb; pdb.set_trace()
     X = reps.astype(np.float32, copy=False)
+    
+    if centered:
+        # Subtract mean from each vector (row-wise centering)
+        X = X - X.mean(axis=1, keepdims=True)
+    
     nrm = np.linalg.norm(X, axis=1, keepdims=True)
     Xn = X / np.maximum(nrm, eps)
     return Xn @ Xn.T
@@ -127,7 +132,6 @@ def rsa_group_pair_stats(sim: np.ndarray, groups: np.ndarray) -> PairStats:
     Compute mean/var of similarities for pairs (i<j) within same group vs different groups.
     groups: [N] int group id. States with group < 0 are ignored.
     """
-    import pdb; pdb.set_trace()
     assert sim.shape[0] == sim.shape[1]
     N = sim.shape[0]
     assert groups.shape[0] == N
