@@ -25,7 +25,7 @@ from rlgrid.mdp.utils import (
     transition_homomorphism_partition,
 )
 
-from rlgrid.analysis.rsa import compute_layer_reps, cosine_rsa, rsa_group_pair_stats
+from rlgrid.analysis.rsa import compute_layer_reps, cosine_rsa, pearson_rsa, rsa_group_pair_stats
 
 
 def _read_json(path: str) -> Dict[str, Any]:
@@ -176,6 +176,12 @@ def main():
         action="store_true",
         help="use centered cosine similarity (subtract mean before computing similarity)"
     )
+    p.add_argument(
+        "--similarity",
+        choices=["cosine", "pearson"],
+        default="cosine",
+        help="similarity measure to use: cosine similarity or Pearson correlation"
+    )
 
     args = p.parse_args()
 
@@ -289,6 +295,7 @@ def main():
             "test_seed": args.test_seed,
             "save_rsa": bool(args.save_rsa),
             "centered": bool(args.centered),
+            "similarity": args.similarity,
             "homomorphism_stats": hom_stats,
         },
         "checkpoints_found": [os.path.basename(x) for x in ckpts],
@@ -324,8 +331,15 @@ def main():
             X_all = reps_all.reps[layer]
             X_roll = reps_roll.reps[layer]
 
-            sim_all = cosine_rsa(X_all, centered=args.centered)
-            sim_roll = cosine_rsa(X_roll, centered=args.centered)
+            # Compute similarity matrix based on chosen method
+            if args.similarity == "cosine":
+                sim_all = cosine_rsa(X_all, centered=args.centered)
+                sim_roll = cosine_rsa(X_roll, centered=args.centered)
+            elif args.similarity == "pearson":
+                sim_all = pearson_rsa(X_all)
+                sim_roll = pearson_rsa(X_roll)
+            else:
+                raise ValueError(f"Unknown similarity method: {args.similarity}")
 
             stats_all = rsa_group_pair_stats(sim_all, groups_all)
             stats_roll = rsa_group_pair_stats(sim_roll, groups_roll)
