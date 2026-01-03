@@ -30,6 +30,32 @@ def cosine_rsa(reps: np.ndarray, eps: float = 1e-8, centered: bool = False) -> n
     return Xn @ Xn.T
 
 
+def pearson_rsa(reps: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    """
+    Compute Pearson correlation matrix between observations.
+    
+    reps: [N, D] float32/float64 - N observations, D features
+    eps: small value to avoid division by zero
+    returns: [N, N] Pearson correlation matrix
+    """
+    X = reps.astype(np.float32, copy=False)
+    
+    # Column-wise centering (subtract mean of each feature)
+    X_centered = X - X.mean(axis=0, keepdims=True)
+    
+    # Column-wise standard deviation
+    X_std = X_centered.std(axis=0, keepdims=True)
+    
+    # Standardize: subtract mean and divide by std
+    X_standardized = X_centered / np.maximum(X_std, eps)
+    
+    # Pearson correlation: (1/(N-1)) * X_standardized @ X_standardized.T
+    N = X.shape[0]
+    corr_matrix = X_standardized @ X_standardized.T / max(N - 1, 1)
+    
+    return corr_matrix
+
+
 @dataclass
 class LayerReps:
     layer_names: List[str]
