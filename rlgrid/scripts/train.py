@@ -37,6 +37,9 @@ def main():
                help="record episode video every N env-steps (0 disables)")
     p.add_argument("--video-fps", type=int, default=30,
                help="FPS for recorded videos")
+    # observability settings
+    p.add_argument("--full-obs", action="store_true",
+               help="use full observability instead of partial (makes learning easier but less robust)")
     
     args = p.parse_args()
 
@@ -65,7 +68,7 @@ def main():
     if args.render_static or args.video_freq > 0:
         render_env = gym.make(args.env_id, render_mode='rgb_array')
         from rlgrid.envs.wrappers import make_minigrid_wrapped
-        render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs)
+        render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs, full_obs=args.full_obs)
 
     # Render static environment image at start
     if args.render_static and writer and render_env:
@@ -74,12 +77,12 @@ def main():
         print(f"Saved initial environment image to: {static_path}")
 
     if args.algo in ["ppo","a2c"]:
-        cfg_env = EnvConfig(env_id=args.env_id, seed=args.seed, n_envs=args.n_envs, obs_mode=args.obs)
+        cfg_env = EnvConfig(env_id=args.env_id, seed=args.seed, n_envs=args.n_envs, obs_mode=args.obs, full_obs=args.full_obs)
         env = make_vec_env(cfg_env)
     else:
         env = gym.make(args.env_id)
         from rlgrid.envs.wrappers import make_minigrid_wrapped
-        env = make_minigrid_wrapped(env, obs_mode=args.obs)
+        env = make_minigrid_wrapped(env, obs_mode=args.obs, full_obs=args.full_obs)
 
     if args.algo == "ppo":
         cfg = PPOConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
