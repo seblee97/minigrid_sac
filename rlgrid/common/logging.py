@@ -61,6 +61,7 @@ class LogWriter:
     - monitor.csv: episode return/length/time (SB3-like)
     - config.json: run config payload
     - tb/: TensorBoard scalars (optional)
+    - renders/: static images and videos
     """
     def __init__(self, cfg: LogConfig, config_payload: Optional[Dict[str, Any]] = None):
         self.cfg = cfg
@@ -122,6 +123,21 @@ class LogWriter:
     def checkpoint_path(self, step: int, prefix: str = "ckpt") -> str:
         return os.path.join(self.checkpoint_dir(), f"{prefix}_step_{int(step)}.pt")
 
+    def renders_dir(self) -> str:
+        """Create and return the renders directory path."""
+        p = os.path.join(self.run_path, "renders")
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def static_image_path(self, filename: str = "env_initial.png") -> str:
+        """Get path for saving a static environment image."""
+        return os.path.join(self.renders_dir(), filename)
+
+    def video_dir(self) -> str:
+        """Create and return the video directory path."""
+        p = os.path.join(self.renders_dir(), "videos")
+        os.makedirs(p, exist_ok=True)
+        return p
 
     def close(self) -> None:
         try:
