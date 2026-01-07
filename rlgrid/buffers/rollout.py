@@ -58,7 +58,14 @@ class RolloutBuffer:
         ret = torch.from_numpy(returns).to(self.device)
 
         if normalize_adv:
-            adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+            # More stable advantage normalization with epsilon and per-batch
+            adv_mean = adv.mean()
+            adv_std = adv.std()
+            # Prevent division by very small numbers
+            if adv_std > 1e-6:
+                adv = (adv - adv_mean) / (adv_std + 1e-8)
+            else:
+                adv = adv - adv_mean
 
         return adv, ret
 
