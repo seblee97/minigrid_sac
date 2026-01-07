@@ -18,19 +18,19 @@ from rlgrid.policies.distributions import CategoricalDist
 
 @dataclass
 class PPOConfig(AlgoConfig):
-    n_steps: int = 128
+    n_steps: int = 256  # Increase for partial obs - need longer sequences
     n_envs: int = 8
     batch_size: int = 256
     n_epochs: int = 4
-    clip_range: float = 0.1  # Reduced from 0.2 for more stability
+    clip_range: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     gae_lambda: float = 0.95
     normalize_adv: bool = True
-    clip_vloss: bool = True  # Add value function clipping
-    target_kl: float = 0.01  # Early stopping on KL divergence
-    lr_decay: bool = True  # Enable learning rate decay
+    clip_vloss: bool = False
+    target_kl: float = 0.05
+    lr_decay: bool = False
 
 class PPO(BaseAlgorithm):
     def __init__(self, policy: PolicyType, env: gym.Env, cfg: PPOConfig, policy_kwargs: Optional[dict] = None, writer=None):
@@ -182,6 +182,10 @@ class PPO(BaseAlgorithm):
             n_samples = obs_b.shape[0]
             inds = np.arange(n_samples)
 
+            # Get old logits for KL divergence calculation
+            with torch.no_grad():
+                old_logits, _ = self.ac.forward(obs_b)
+
             last_pg = last_v = last_ent = last_kl = None
             early_stop_epoch = cfg.n_epochs
             
@@ -196,11 +200,10 @@ class PPO(BaseAlgorithm):
                     logp = dist.log_prob(actions_b[mb])
                     entropy = dist.entropy().mean()
 
-                    # Calculate KL divergence for early stopping
+                    # Calculate KL divergence correctly (old vs new policy)
                     with torch.no_grad():
-                        old_logits, _ = self.ac.forward(obs_b[mb])
-                        old_dist = CategoricalDist(logits=old_logits)
-                        kl_div = torch.mean(old_dist.kl_divergence(dist))
+                        old_dist_mb = CategoricalDist(logits=old_logits[mb])
+                        kl_div = torch.mean(old_dist_mb.kl_divergence(dist))
                         epoch_kls.append(kl_div.item())
 
                     ratio = torch.exp(logp - old_logp_b[mb])
@@ -208,7 +211,7 @@ class PPO(BaseAlgorithm):
                     pg_loss2 = -adv_b[mb] * torch.clamp(ratio, 1 - cfg.clip_range, 1 + cfg.clip_range)
                     pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                    # Value function clipping
+                    # Simple value loss (no clipping by default)
                     if cfg.clip_vloss:
                         values_clipped = old_values_b[mb] + torch.clamp(
                             values - old_values_b[mb], -cfg.clip_range, cfg.clip_range
@@ -230,14 +233,14 @@ class PPO(BaseAlgorithm):
                     last_v = float(v_loss.detach().cpu().item())
                     last_ent = float(entropy.detach().cpu().item())
 
-                # Check for early stopping based on KL divergence
-                avg_kl = np.mean(epoch_kls)
+                # Check for early stopping based on KL divergence (less aggressive)
+                avg_kl = np.mean(epoch_kls) if epoch_kls else 0.0
                 last_kl = avg_kl
-                if avg_kl > cfg.target_kl:
+                if avg_kl > cfg.target_kl and epoch > 0:  # Only stop after at least 1 epoch
                     early_stop_epoch = epoch + 1
                     break
 
-            # Step learning rate scheduler
+            # Step learning rate scheduler only if enabled
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
@@ -274,8 +277,7 @@ class PPO(BaseAlgorithm):
                 summ = self.logger.summary()
                 pbar.set_postfix({"ep_rew": round(summ.get("rollout/ep_rew_mean", 0.0), 3),
                                   "fps": int(summ.get("time/fps", 0.0)),
-                                  "kl": round(summ.get("train/kl_divergence", 0.0), 4),
-                                  "lr": round(current_lr, 6)})
+                                  "kl": round(summ.get("train/kl_divergence", 0.0), 4)})
                 self.logger.reset()
 
         return self
