@@ -8,6 +8,7 @@ import minigrid  # ensure MiniGrid envs register
 from rlgrid.envs.make_env import EnvConfig, make_vec_env
 from rlgrid.algos import PPO, PPOConfig, A2C, A2CConfig, DQN, DQNConfig, QRDQN, QRDQNConfig
 from rlgrid.common.logging import LogWriter, LogConfig
+from rlgrid.common.rendering import render_static_env_image
 
 def main():
     p = argparse.ArgumentParser()
@@ -29,6 +30,13 @@ def main():
                help="save model checkpoint every N env-steps (0 disables)")
     p.add_argument("--checkpoint-prefix", type=str, default="",
                help="optional prefix for checkpoint filenames")
+    # rendering and video
+    p.add_argument("--render-static", action="store_true", 
+               help="render static image of environment at start of training")
+    p.add_argument("--video-freq", type=int, default=0,
+               help="record episode video every N env-steps (0 disables)")
+    p.add_argument("--video-fps", type=int, default=30,
+               help="FPS for recorded videos")
     
     args = p.parse_args()
 
@@ -51,6 +59,19 @@ def main():
             "n_envs": args.n_envs,
         },
     )
+
+    # Create single env for rendering if needed
+    render_env = None
+    if args.render_static or args.video_freq > 0:
+        render_env = gym.make(args.env_id, render_mode='rgb_array')
+        from rlgrid.envs.wrappers import make_minigrid_wrapped
+        render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs)
+
+    # Render static environment image at start
+    if args.render_static and writer and render_env:
+        static_path = writer.static_image_path("env_initial.png")
+        render_static_env_image(render_env, static_path, title=f"{args.env_id} - Initial State")
+        print(f"Saved initial environment image to: {static_path}")
 
     if args.algo in ["ppo","a2c"]:
         cfg_env = EnvConfig(env_id=args.env_id, seed=args.seed, n_envs=args.n_envs, obs_mode=args.obs)
@@ -75,6 +96,9 @@ def main():
 
     model._checkpoint_freq = int(args.checkpoint_freq)
     model._checkpoint_prefix = args.checkpoint_prefix or args.algo
+    model._video_freq = int(args.video_freq)
+    model._video_fps = int(args.video_fps)
+    model._render_env = render_env
 
     model.learn(total_timesteps=args.total_steps, log_interval=args.log_interval)
 
