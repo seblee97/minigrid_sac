@@ -22,12 +22,15 @@ class PPOConfig(AlgoConfig):
     n_envs: int = 8
     batch_size: int = 256
     n_epochs: int = 4
-    clip_range: float = 0.2
+    clip_range: float = 0.1  # Reduced from 0.2 for more stability
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     gae_lambda: float = 0.95
     normalize_adv: bool = True
+    clip_vloss: bool = True  # Add value function clipping
+    target_kl: float = 0.01  # Early stopping on KL divergence
+    lr_decay: bool = True  # Enable learning rate decay
 
 class PPO(BaseAlgorithm):
     def __init__(self, policy: PolicyType, env: gym.Env, cfg: PPOConfig, policy_kwargs: Optional[dict] = None, writer=None):
@@ -38,6 +41,15 @@ class PPO(BaseAlgorithm):
         n_actions = env.single_action_space.n if hasattr(env, "single_action_space") else env.action_space.n
         self.ac = ActorCritic(obs_shape, n_actions, policy).to(self.device)
         self.optim = torch.optim.Adam(self.ac.parameters(), lr=cfg.lr)
+        
+        # Add learning rate scheduler if enabled
+        self.lr_scheduler = None
+        if cfg.lr_decay:
+            # Will be initialized in learn() when we know n_updates
+            self._lr_decay_enabled = True
+        else:
+            self._lr_decay_enabled = False
+            
         self.buf = RolloutBuffer(cfg.n_steps, cfg.n_envs, obs_shape, self.device)
 
     def predict(self, obs, deterministic: bool = True):
@@ -47,7 +59,6 @@ class PPO(BaseAlgorithm):
         with torch.no_grad():
             a, _, _ = self.ac.act(obs_t, deterministic=deterministic)
         return a.squeeze(0).cpu().numpy()
-
 
     def learn(self, total_timesteps: int, log_interval: int = 10):
         cfg: PPOConfig = self.cfg  # type: ignore
@@ -64,6 +75,12 @@ class PPO(BaseAlgorithm):
 
         n_updates = total_timesteps // (cfg.n_steps * cfg.n_envs)
         pbar = trange(n_updates, desc="PPO", leave=True)
+
+        # Initialize learning rate scheduler if enabled
+        if self._lr_decay_enabled and self.lr_scheduler is None:
+            self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+                self.optim, start_factor=1.0, end_factor=0.1, total_iters=n_updates
+            )
 
         # Video recording setup
         video_recorder = None
@@ -165,9 +182,13 @@ class PPO(BaseAlgorithm):
             n_samples = obs_b.shape[0]
             inds = np.arange(n_samples)
 
-            last_pg = last_v = last_ent = None
-            for _epoch in range(cfg.n_epochs):
+            last_pg = last_v = last_ent = last_kl = None
+            early_stop_epoch = cfg.n_epochs
+            
+            for epoch in range(cfg.n_epochs):
                 np.random.shuffle(inds)
+                epoch_kls = []
+                
                 for start in range(0, n_samples, cfg.batch_size):
                     mb = inds[start:start+cfg.batch_size]
                     logits, values = self.ac.forward(obs_b[mb])
@@ -175,12 +196,29 @@ class PPO(BaseAlgorithm):
                     logp = dist.log_prob(actions_b[mb])
                     entropy = dist.entropy().mean()
 
+                    # Calculate KL divergence for early stopping
+                    with torch.no_grad():
+                        old_logits, _ = self.ac.forward(obs_b[mb])
+                        old_dist = CategoricalDist(logits=old_logits)
+                        kl_div = torch.mean(old_dist.kl_divergence(dist))
+                        epoch_kls.append(kl_div.item())
+
                     ratio = torch.exp(logp - old_logp_b[mb])
                     pg_loss1 = -adv_b[mb] * ratio
                     pg_loss2 = -adv_b[mb] * torch.clamp(ratio, 1 - cfg.clip_range, 1 + cfg.clip_range)
                     pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                    v_loss = F.mse_loss(values, ret_b[mb])
+                    # Value function clipping
+                    if cfg.clip_vloss:
+                        values_clipped = old_values_b[mb] + torch.clamp(
+                            values - old_values_b[mb], -cfg.clip_range, cfg.clip_range
+                        )
+                        v_loss1 = F.mse_loss(values, ret_b[mb])
+                        v_loss2 = F.mse_loss(values_clipped, ret_b[mb])
+                        v_loss = torch.max(v_loss1, v_loss2)
+                    else:
+                        v_loss = F.mse_loss(values, ret_b[mb])
+
                     loss = pg_loss + cfg.vf_coef * v_loss - cfg.ent_coef * entropy
 
                     self.optim.zero_grad(set_to_none=True)
@@ -191,6 +229,17 @@ class PPO(BaseAlgorithm):
                     last_pg = float(pg_loss.detach().cpu().item())
                     last_v = float(v_loss.detach().cpu().item())
                     last_ent = float(entropy.detach().cpu().item())
+
+                # Check for early stopping based on KL divergence
+                avg_kl = np.mean(epoch_kls)
+                last_kl = avg_kl
+                if avg_kl > cfg.target_kl:
+                    early_stop_epoch = epoch + 1
+                    break
+
+            # Step learning rate scheduler
+            if self.lr_scheduler is not None:
+                self.lr_scheduler.step()
 
             fps = int(global_step / max(1e-6, (time.time() - t0)))
             if ep_returns:
@@ -205,6 +254,13 @@ class PPO(BaseAlgorithm):
                 self.logger.log("train/value_loss", last_v)
             if last_ent is not None:
                 self.logger.log("train/entropy", last_ent)
+            if last_kl is not None:
+                self.logger.log("train/kl_divergence", last_kl)
+            
+            # Log learning rate and early stopping info
+            current_lr = self.optim.param_groups[0]['lr']
+            self.logger.log("train/learning_rate", current_lr)
+            self.logger.log("train/epochs_completed", early_stop_epoch)
 
             self.logger.log("time/fps", float(fps))
             self.logger.log("time/total_steps", float(global_step))
@@ -217,10 +273,13 @@ class PPO(BaseAlgorithm):
             if (update + 1) % log_interval == 0:
                 summ = self.logger.summary()
                 pbar.set_postfix({"ep_rew": round(summ.get("rollout/ep_rew_mean", 0.0), 3),
-                                  "fps": int(summ.get("time/fps", 0.0))})
+                                  "fps": int(summ.get("time/fps", 0.0)),
+                                  "kl": round(summ.get("train/kl_divergence", 0.0), 4),
+                                  "lr": round(current_lr, 6)})
                 self.logger.reset()
 
         return self
+
     def _get_state(self) -> Dict[str, Any]:
         return {
             "algo": "PPO",
