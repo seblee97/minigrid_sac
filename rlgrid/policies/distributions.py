@@ -19,6 +19,13 @@ class CategoricalDist:
     def entropy(self) -> torch.Tensor:
         return torch.distributions.Categorical(logits=self.logits).entropy()
 
+    def kl_divergence(self, other: 'CategoricalDist') -> torch.Tensor:
+        """Compute KL divergence between this distribution and another."""
+        return torch.distributions.kl.kl_divergence(
+            torch.distributions.Categorical(logits=self.logits),
+            torch.distributions.Categorical(logits=other.logits)
+        )
+
 def huber_quantile_loss(td_errors: torch.Tensor, taus: torch.Tensor, kappa: float = 1.0) -> torch.Tensor:
     '''
     Quantile regression Huber loss for QRDQN.
