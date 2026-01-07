@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal, Tuple
 import gymnasium as gym
 import numpy as np
+from minigrid.wrappers import FullyObsWrapper
 
 ObsMode = Literal["image", "image_dir", "rgb"]
 
@@ -67,12 +68,17 @@ class MiniGridObs(gym.ObservationWrapper):
             return img[..., :3]
         raise RuntimeError("unreachable")
 
-def make_minigrid_wrapped(env: gym.Env, obs_mode: ObsMode = "image") -> gym.Env:
+def make_minigrid_wrapped(env: gym.Env, obs_mode: ObsMode = "image", full_obs: bool = False) -> gym.Env:
     # Common, lightweight wrappers:
     # - RecordEpisodeStatistics for returns/length
     env = gym.wrappers.RecordEpisodeStatistics(env)
 
+    # # Only use full observability if explicitly requested
+    if full_obs:
+        env = FullyObsWrapper(env)
+
     # Many MiniGrid envs yield dict obs; adapt it.
     env = MiniGridObs(env, mode=obs_mode)
+
     # Normalize to float for networks by default in the policy (not here).
     return env
