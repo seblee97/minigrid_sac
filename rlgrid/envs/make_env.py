@@ -19,13 +19,14 @@ class EnvConfig:
     n_envs: int = 1
     obs_mode: ObsMode = "image"
     max_episode_steps: Optional[int] = None  # if you want TimeLimit override
+    full_obs: bool = False
 
 def make_single_env(cfg: EnvConfig, idx: int = 0) -> Callable[[], gym.Env]:
     def _thunk() -> gym.Env:
         env = gym.make(cfg.env_id)
         if cfg.max_episode_steps is not None:
             env = gym.wrappers.TimeLimit(env, max_episode_steps=cfg.max_episode_steps)
-        env = make_minigrid_wrapped(env, obs_mode=cfg.obs_mode)
+        env = make_minigrid_wrapped(env, obs_mode=cfg.obs_mode, full_obs=cfg.full_obs)
         env.reset(seed=cfg.seed + idx)
         return env
     return _thunk
