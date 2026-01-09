@@ -15,7 +15,7 @@ class AlgoConfig:
     seed: int = 0
     device: str = "cpu"
     gamma: float = 0.99
-    lr: float = 3e-4
+    lr: float = 3e-5
     verbose: int = 1
 
 class BaseAlgorithm:
