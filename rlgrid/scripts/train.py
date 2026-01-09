@@ -86,16 +86,28 @@ def main():
 
     if args.algo == "ppo":
         cfg = PPOConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
-        model = PPO(args.policy, env, cfg, writer=writer)
+        model = PPO(
+            args.policy,
+            env,
+            cfg,
+            policy_kwargs={"obs_mode": args.obs},
+            writer=writer,
+        )
     elif args.algo == "a2c":
         cfg = A2CConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
-        model = A2C(args.policy, env, cfg, writer=writer)
+        model = A2C(
+            args.policy,
+            env,
+            cfg,
+            policy_kwargs={"obs_mode": args.obs},
+            writer=writer,
+        )
     elif args.algo == "dqn":
         cfg = DQNConfig(seed=args.seed, device=args.device)
-        model = DQN(args.policy, env, cfg, writer=writer)
-    else:
+        model = DQN(args.policy, env, cfg, policy_kwargs={"obs_mode": args.obs}, writer=writer)
+    elif args.algo == "qrdqn":
         cfg = QRDQNConfig(seed=args.seed, device=args.device)
-        model = QRDQN(args.policy, env, cfg, writer=writer)
+        model = QRDQN(args.policy, env, cfg, policy_kwargs={"obs_mode": args.obs}, writer=writer)
 
     model._checkpoint_freq = int(args.checkpoint_freq)
     model._checkpoint_prefix = args.checkpoint_prefix or args.algo
