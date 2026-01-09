@@ -39,7 +39,22 @@ class PPO(BaseAlgorithm):
         self.policy_kwargs = policy_kwargs or {}
         obs_shape = env.single_observation_space.shape if hasattr(env, "single_observation_space") else env.observation_space.shape
         n_actions = env.single_action_space.n if hasattr(env, "single_action_space") else env.action_space.n
-        self.ac = ActorCritic(obs_shape, n_actions, policy).to(self.device)
+
+        obs_mode = self.policy_kwargs.get("obs_mode", "image")  # "image"|"image_dir"|"rgb"
+        n_obj = self.policy_kwargs.get("n_obj", 11)
+        n_col = self.policy_kwargs.get("n_col", 6)
+        n_state = self.policy_kwargs.get("n_state", 3)
+        
+        self.ac = ActorCritic(
+            obs_shape,
+            n_actions,
+            policy,
+            obs_mode=obs_mode,
+            n_obj=n_obj,
+            n_col=n_col,
+            n_state=n_state,
+        ).to(self.device)
+
         self.optim = torch.optim.Adam(self.ac.parameters(), lr=cfg.lr)
         
         # Add learning rate scheduler if enabled
