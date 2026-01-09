@@ -76,25 +76,10 @@ class DQN(BaseAlgorithm):
         ep_len = 0
         t0 = time.time()
 
-        # Video recording setup
-        video_recorder = None
-        render_episode_active = False
-
         pbar = trange(total_timesteps, desc="DQN", leave=True)
         for t in pbar:
             self.total_steps += 1
             self._update_eps()
-
-            # Check if we should start recording a video
-            if self.should_record_video(self.total_steps) and video_recorder is None:
-                video_recorder = self._setup_video_recording(self.total_steps)
-                if video_recorder is not None:
-                    video_recorder.start_recording()
-                    # Reset render environment with SAME seed as training env
-                    if self._render_env is not None:
-                        self._render_env.reset(seed=cfg.seed)
-                        render_episode_active = True
-                        print(f"Started recording episode at step {self.total_steps}")
 
             if np.random.rand() < self.eps:
                 action = env.action_space.sample()
@@ -103,34 +88,6 @@ class DQN(BaseAlgorithm):
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = bool(terminated or truncated)
-
-            # Sync render environment and capture frame
-            if video_recorder is not None and video_recorder.recording and render_episode_active:
-                try:
-                    if self._render_env is not None:
-                        # Take same action in render environment
-                        render_next_obs, render_reward, render_terminated, render_truncated, _ = self._render_env.step(action)
-                        render_done = bool(render_terminated or render_truncated)
-                        
-                        # Capture frame from render environment
-                        video_recorder.capture_frame()
-                        
-                        # Stop recording if render environment episode ends
-                        if render_done:
-                            filename = f"episode_step_{self.total_steps}"
-                            success = video_recorder.stop_recording(filename)
-                            if success:
-                                print(f"Saved training video: {filename}.mp4 (render env episode ended)")
-                            video_recorder = None
-                            render_episode_active = False
-                            
-                except Exception as e:
-                    print(f"Warning: Could not sync render environment: {e}")
-                    # Stop recording on error
-                    if video_recorder is not None:
-                        video_recorder.stop_recording(f"episode_step_{self.total_steps}_error")
-                        video_recorder = None
-                        render_episode_active = False
 
             self.rb.add(obs, action, reward, float(done), next_obs)
             obs = next_obs
@@ -142,15 +99,6 @@ class DQN(BaseAlgorithm):
                     self.writer.log_episode(self.total_steps, ep_ret, ep_len)
                 self.logger.log("rollout/ep_rew", ep_ret)
                 self.logger.log("rollout/ep_len", ep_len)
-                
-                # Stop recording if training episode ended and we're still recording
-                if video_recorder is not None and video_recorder.recording:
-                    filename = f"episode_step_{self.total_steps}"
-                    success = video_recorder.stop_recording(filename)
-                    if success:
-                        print(f"Saved training video: {filename}.mp4 (training env episode ended)")
-                    video_recorder = None
-                    render_episode_active = False
                 
                 # Reset training environment
                 obs, _ = env.reset()
