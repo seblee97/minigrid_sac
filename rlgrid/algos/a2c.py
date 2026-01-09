@@ -71,6 +71,8 @@ class A2C(BaseAlgorithm):
         pbar = trange(n_updates, desc="A2C", leave=True)
 
         for update in pbar:
+
+            self.maybe_eval(global_step)
             obs_buf, act_buf, rew_buf, done_buf, val_buf = [], [], [], [], []
 
             for step in range(cfg.n_steps):

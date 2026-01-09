@@ -96,6 +96,9 @@ class QRDQN(BaseAlgorithm):
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = bool(terminated or truncated)
+            self.total_steps += 1
+
+            self.maybe_eval(self.total_steps)
 
             self.rb.add(obs, action, reward, float(done), next_obs)
             obs = next_obs

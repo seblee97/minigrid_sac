@@ -101,6 +101,8 @@ class PPO(BaseAlgorithm):
             self.buf.pos = 0
             self.buf.full = False
 
+            self.maybe_eval(global_step)
+
             for step in range(cfg.n_steps):
                 global_step += cfg.n_envs
                 obs_t = to_tensor(obs, self.device)

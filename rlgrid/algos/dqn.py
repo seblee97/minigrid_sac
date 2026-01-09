@@ -88,6 +88,9 @@ class DQN(BaseAlgorithm):
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = bool(terminated or truncated)
+            self.total_steps += 1
+
+            self.maybe_eval(self.total_steps)
 
             self.rb.add(obs, action, reward, float(done), next_obs)
             obs = next_obs
@@ -102,10 +105,6 @@ class DQN(BaseAlgorithm):
                 
                 # Reset training environment
                 obs, _ = env.reset()
-                
-                # Reset render environment with same seed if it exists
-                if self._render_env is not None and not render_episode_active:
-                    self._render_env.reset()
                 
                 ep_ret = 0.0
                 ep_len = 0

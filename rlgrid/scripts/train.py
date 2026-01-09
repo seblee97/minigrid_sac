@@ -9,6 +9,7 @@ from rlgrid.envs.make_env import EnvConfig, make_vec_env
 from rlgrid.algos import PPO, PPOConfig, A2C, A2CConfig, DQN, DQNConfig, QRDQN, QRDQNConfig
 from rlgrid.common.logging import LogWriter, LogConfig
 from rlgrid.common.rendering import render_static_env_image
+from rlgrid.envs.wrappers import make_minigrid_wrapped
 
 def main():
     p = argparse.ArgumentParser()
@@ -37,6 +38,14 @@ def main():
                help="record episode video every N env-steps (0 disables)")
     p.add_argument("--video-fps", type=int, default=30,
                help="FPS for recorded videos")
+    p.add_argument("--eval-freq", type=int, default=0,
+                help="run one evaluation episode every N env-steps (0 disables); logs eval/* metrics")
+    p.add_argument("--eval-video-freq", type=int, default=0,
+               help="record an evaluation episode video every N env-steps (0 disables). If 0, --video-freq is used as a legacy alias.")
+    p.add_argument("--eval-max-steps", type=int, default=2048,
+               help="max steps per evaluation episode")
+    p.add_argument("--eval-stochastic", action="store_true",
+               help="use stochastic actions during evaluation (default: deterministic)")
     # observability settings
     p.add_argument("--full-obs", action="store_true",
                help="use full observability instead of partial (makes learning easier but less robust)")
@@ -63,11 +72,20 @@ def main():
         },
     )
 
-    # Create single env for rendering if needed
+    # Create single envs for evaluation and/or rendering if needed
+    eval_env = None
     render_env = None
-    if args.render_static or args.video_freq > 0:
+
+    # Backward compatible: --video-freq acts as a legacy alias for eval-video-freq
+    eval_freq = int(args.eval_freq)
+    eval_video_freq = int(args.eval_video_freq) if int(args.eval_video_freq) > 0 else int(args.video_freq)
+
+    if eval_freq > 0 or eval_video_freq > 0:
+        eval_env = gym.make(args.env_id)
+        eval_env = make_minigrid_wrapped(eval_env, obs_mode=args.obs, full_obs=args.full_obs)
+
+    if args.render_static or eval_video_freq > 0:
         render_env = gym.make(args.env_id, render_mode='rgb_array')
-        from rlgrid.envs.wrappers import make_minigrid_wrapped
         render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs, full_obs=args.full_obs)
 
     # Render static environment image at start
@@ -81,7 +99,6 @@ def main():
         env = make_vec_env(cfg_env)
     else:
         env = gym.make(args.env_id)
-        from rlgrid.envs.wrappers import make_minigrid_wrapped
         env = make_minigrid_wrapped(env, obs_mode=args.obs, full_obs=args.full_obs)
 
     if args.algo == "ppo":
@@ -111,9 +128,19 @@ def main():
 
     model._checkpoint_freq = int(args.checkpoint_freq)
     model._checkpoint_prefix = args.checkpoint_prefix or args.algo
-    model._video_freq = int(args.video_freq)
+    
+    # Evaluation scheduling (metrics) and evaluation video recording
+    model._eval_env = eval_env
+    model._eval_freq = int(eval_freq)
+    model._eval_video_freq = int(eval_video_freq)
+    model._eval_max_steps = int(args.eval_max_steps)
+    model._eval_deterministic = (not args.eval_stochastic)
+    # Rendering/video settings
     model._video_fps = int(args.video_fps)
     model._render_env = render_env
+
+    # Legacy alias retained for older code paths (should be unused by the algos after this patch)
+    model._video_freq = int(eval_video_freq)
 
     model.learn(total_timesteps=args.total_steps, log_interval=args.log_interval)
 
