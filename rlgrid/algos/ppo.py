@@ -97,22 +97,9 @@ class PPO(BaseAlgorithm):
                 self.optim, start_factor=1.0, end_factor=0.1, total_iters=n_updates
             )
 
-        # Video recording setup
-        video_recorder = None
-        recording_env_idx = 0  # Record from first environment
-
         for update in pbar:
             self.buf.pos = 0
             self.buf.full = False
-
-            # Check if we should start recording a video
-            if self.should_record_video(global_step) and video_recorder is None:
-                video_recorder = self._setup_video_recording(global_step)
-                if video_recorder is not None:
-                    video_recorder.start_recording()
-                    # Reset the render environment to sync with training
-                    if self._render_env is not None:
-                        self._render_env.reset(seed=cfg.seed)
 
             for step in range(cfg.n_steps):
                 global_step += cfg.n_envs
@@ -122,19 +109,6 @@ class PPO(BaseAlgorithm):
 
                 next_obs, rewards, terms, truncs, infos = env.step(actions.cpu().numpy())
                 dones = np.logical_or(terms, truncs).astype(np.float32)
-
-                # Capture video frame if recording
-                if video_recorder is not None and video_recorder.recording:
-                    # For vectorized environments, sync with the first environment
-                    try:
-                        if hasattr(env, 'envs') and len(env.envs) > 0:
-                            # Take action in render env to sync with training env
-                            action_to_take = actions[recording_env_idx].cpu().numpy()
-                            self._render_env.step(action_to_take)
-                        
-                        video_recorder.capture_frame()
-                    except Exception as e:
-                        print(f"Warning: Could not capture video frame: {e}")
 
                 ep_ret += rewards
                 ep_len += 1
@@ -147,14 +121,6 @@ class PPO(BaseAlgorithm):
                         ep_lengths.append(l_i)
                         if self.writer is not None:
                             self.writer.log_episode(global_step, r_i, l_i)
-                        
-                        # Stop recording if this is the recording environment and episode ended
-                        if video_recorder is not None and i == recording_env_idx and video_recorder.recording:
-                            filename = f"episode_step_{global_step}_env_{i}"
-                            success = video_recorder.stop_recording(filename)
-                            if success:
-                                print(f"Saved training video: {filename}.mp4")
-                            video_recorder = None
                         
                         ep_ret[i] = 0.0
                         ep_len[i] = 0

@@ -70,21 +70,8 @@ class A2C(BaseAlgorithm):
         n_updates = total_timesteps // (cfg.n_steps * cfg.n_envs)
         pbar = trange(n_updates, desc="A2C", leave=True)
 
-        # Video recording setup
-        video_recorder = None
-        recording_env_idx = 0  # Record from first environment
-
         for update in pbar:
             obs_buf, act_buf, rew_buf, done_buf, val_buf = [], [], [], [], []
-
-            # Check if we should start recording a video
-            if self.should_record_video(global_step) and video_recorder is None:
-                video_recorder = self._setup_video_recording(global_step)
-                if video_recorder is not None:
-                    video_recorder.start_recording()
-                    # Reset the render environment to sync with training
-                    if self._render_env is not None:
-                        self._render_env.reset(seed=cfg.seed)
 
             for step in range(cfg.n_steps):
                 global_step += cfg.n_envs
@@ -95,29 +82,6 @@ class A2C(BaseAlgorithm):
 
                 next_obs, rewards, terms, truncs, infos = env.step(actions.cpu().numpy())
                 dones = np.logical_or(terms, truncs).astype(np.float32)
-
-                # Capture video frame if recording
-                if video_recorder is not None and video_recorder.recording:
-                    try:
-                        if hasattr(env, 'envs') and len(env.envs) > 0:
-                            # Take action in render env to sync with training env
-                            action_to_take = actions[recording_env_idx].cpu().numpy()
-                            self._render_env.step(action_to_take)
-                        
-                        video_recorder.capture_frame()
-                    except Exception as e:
-                        print(f"Warning: Could not capture video frame: {e}")
-
-                # Handle episode endings and video recording
-                for i in range(cfg.n_envs):
-                    if dones[i]:
-                        # Stop recording if this is the recording environment and episode ended
-                        if video_recorder is not None and i == recording_env_idx and video_recorder.recording:
-                            filename = f"episode_step_{global_step}_env_{i}"
-                            success = video_recorder.stop_recording(filename)
-                            if success:
-                                print(f"Saved training video: {filename}.mp4")
-                            video_recorder = None
 
                 if isinstance(infos, dict) and "final_info" in infos and infos["final_info"] is not None:
                     for fi in infos["final_info"]:

@@ -84,22 +84,10 @@ class QRDQN(BaseAlgorithm):
         ep_len = 0
         t0 = time.time()
 
-        # Video recording setup
-        video_recorder = None
-
         pbar = trange(total_timesteps, desc="QRDQN", leave=True)
         for t in pbar:
             self.total_steps += 1
             self._update_eps()
-
-            # Check if we should start recording a video
-            if self.should_record_video(self.total_steps) and video_recorder is None:
-                video_recorder = self._setup_video_recording(self.total_steps)
-                if video_recorder is not None:
-                    video_recorder.start_recording()
-                    # Reset the render environment to sync with training
-                    if self._render_env is not None:
-                        self._render_env.reset(seed=cfg.seed)
 
             if np.random.rand() < self.eps:
                 action = env.action_space.sample()
@@ -108,16 +96,6 @@ class QRDQN(BaseAlgorithm):
 
             next_obs, reward, terminated, truncated, _ = env.step(action)
             done = bool(terminated or truncated)
-
-            # Capture video frame if recording
-            if video_recorder is not None and video_recorder.recording:
-                try:
-                    # For single env, just sync the action
-                    if self._render_env is not None:
-                        self._render_env.step(action)
-                    video_recorder.capture_frame()
-                except Exception as e:
-                    print(f"Warning: Could not capture video frame: {e}")
 
             self.rb.add(obs, action, reward, float(done), next_obs)
             obs = next_obs
@@ -129,14 +107,6 @@ class QRDQN(BaseAlgorithm):
                     self.writer.log_episode(self.total_steps, ep_ret, ep_len)
                 self.logger.log("rollout/ep_rew", ep_ret)
                 self.logger.log("rollout/ep_len", ep_len)
-                
-                # Stop recording if episode ended
-                if video_recorder is not None and video_recorder.recording:
-                    filename = f"episode_step_{self.total_steps}"
-                    success = video_recorder.stop_recording(filename)
-                    if success:
-                        print(f"Saved training video: {filename}.mp4")
-                    video_recorder = None
                 
                 obs, _ = env.reset()
                 ep_ret = 0.0

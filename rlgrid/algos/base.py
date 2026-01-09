@@ -26,29 +26,6 @@ class BaseAlgorithm:
         self.logger = Logger()
         self.writer = writer
         set_seed(cfg.seed)
-        
-        # Video recording attributes
-        self._video_freq = 0
-        self._video_fps = 30
-        self._render_env = None
-        self._last_video_step = 0
-
-    def should_record_video(self, step: int) -> bool:
-        """Check if we should record a video at this step."""
-        if self._video_freq <= 0 or self._render_env is None:
-            return False
-        return step - self._last_video_step >= self._video_freq
-
-    def _setup_video_recording(self, step: int):
-        """Set up video recording for current episode."""
-        if not self.should_record_video(step) or self.writer is None:
-            return None
-            
-        from rlgrid.common.rendering import EpisodeVideoRecorder
-        video_dir = self.writer.video_dir()
-        recorder = EpisodeVideoRecorder(self._render_env, video_dir, fps=self._video_fps)
-        self._last_video_step = step
-        return recorder
 
     def learn(self, total_timesteps: int, log_interval: int = 10) -> "BaseAlgorithm":
         raise NotImplementedError
