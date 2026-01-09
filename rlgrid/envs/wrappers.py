@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, Tuple
 import gymnasium as gym
 import numpy as np
-from minigrid.wrappers import FullyObsWrapper
+from minigrid.wrappers import FullyObsWrapper, RGBImgObsWrapper
 
 ObsMode = Literal["image", "image_dir", "rgb"]
 
@@ -31,11 +31,13 @@ class MiniGridObs(gym.ObservationWrapper):
         assert isinstance(img_space, gym.spaces.Box)
         assert img_space.dtype == np.uint8, "MiniGrid image obs are typically uint8."
 
+        SYMBOLIC_HIGH = 20  # safe-ish typical bound; could be set larger to be safe
+
         h, w, c = img_space.shape
         if mode == "image":
-            self.observation_space = gym.spaces.Box(low=0, high=255, shape=(h, w, c), dtype=np.uint8)
+            self.observation_space = gym.spaces.Box(low=0, high=SYMBOLIC_HIGH, shape=(h, w, c), dtype=np.uint8)
         elif mode == "image_dir":
-            self.observation_space = gym.spaces.Box(low=0, high=255, shape=(h, w, c + 1), dtype=np.uint8)
+            self.observation_space = gym.spaces.Box(low=0, high=max(SYMBOLIC_HIGH, 3), shape=(h, w, c + 1), dtype=np.uint8)
         elif mode == "rgb":
             # Assumes upstream wrapper provides RGB image in obs (H,W,3)
             self.observation_space = gym.spaces.Box(low=0, high=255, shape=(h, w, 3), dtype=np.uint8)
@@ -46,11 +48,11 @@ class MiniGridObs(gym.ObservationWrapper):
         if isinstance(obs, dict):
             img = obs["image"]
             direction = obs.get("direction", None)
-            rgb = obs.get("rgb", None)
+            # rgb = obs.get("rgb", None)
         else:
             img = obs
             direction = None
-            rgb = None
+            # rgb = None
 
         if self.mode == "image":
             return img
@@ -61,11 +63,13 @@ class MiniGridObs(gym.ObservationWrapper):
             dir_chan = np.full(img.shape[:2] + (1,), int(direction) % 4, dtype=np.uint8)
             return np.concatenate([img, dir_chan], axis=-1)
         if self.mode == "rgb":
-            if rgb is not None:
-                return rgb
+            # if rgb is not None:
+            #     return rgb
             # fallback: convert object encoding to fake RGB via simple lookup
             # (kept intentionally simple; prefer MiniGrid's RGB wrappers if needed)
-            return img[..., :3]
+            if img.shape[-1] != 3:
+                raise RuntimeError(f"Expected RGB image with 3 channels, got shape {img.shape}")
+            return img
         raise RuntimeError("unreachable")
 
 def make_minigrid_wrapped(env: gym.Env, obs_mode: ObsMode = "image", full_obs: bool = False) -> gym.Env:
@@ -76,6 +80,9 @@ def make_minigrid_wrapped(env: gym.Env, obs_mode: ObsMode = "image", full_obs: b
     # # Only use full observability if explicitly requested
     if full_obs:
         env = FullyObsWrapper(env)
+
+    if obs_mode == "rgb":
+        env = RGBImgObsWrapper(env)
 
     # Many MiniGrid envs yield dict obs; adapt it.
     env = MiniGridObs(env, mode=obs_mode)
