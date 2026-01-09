@@ -46,9 +46,16 @@ class RolloutBuffer:
         advantages = np.zeros_like(self.rewards)
         last_gae = np.zeros((self.n_envs,), dtype=np.float32)
 
+        last_dones_np = last_dones.detach().cpu().numpy().astype(np.float32)
+        last_values_np = last_values.detach().cpu().numpy()
+
         for t in reversed(range(self.n_steps)):
-            next_nonterminal = 1.0 - (last_dones.cpu().numpy().astype(np.float32) if t == self.n_steps - 1 else self.dones[t + 1])
-            next_values = last_values.cpu().numpy() if t == self.n_steps - 1 else self.values[t + 1]
+            if t == self.n_steps - 1:
+                next_nonterminal = 1.0 - last_dones_np
+                next_values = last_values_np
+            else:
+                next_nonterminal = 1.0 - self.dones[t].astype(np.float32)
+                next_values = self.values[t + 1]
             delta = self.rewards[t] + gamma * next_values * next_nonterminal - self.values[t]
             last_gae = delta + gamma * gae_lambda * next_nonterminal * last_gae
             advantages[t] = last_gae
