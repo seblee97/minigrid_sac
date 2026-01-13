@@ -166,8 +166,18 @@ class ActorCritic(nn.Module):
 
     def _init_heads(self):
         feat_dim = self._infer_feat_dim()
-        self.actor = nn.Linear(feat_dim, self.n_actions)
-        self.critic = nn.Linear(feat_dim, 1)
+        # Actor head: backbone -> FC layer -> output layer
+        self.actor = nn.Sequential(
+            nn.Linear(feat_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, self.n_actions)
+        )
+        # Critic head: backbone -> FC layer -> output layer
+        self.critic = nn.Sequential(
+            nn.Linear(feat_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
 
     def forward(self, obs: torch.Tensor):
         obs = preprocess_obs(
