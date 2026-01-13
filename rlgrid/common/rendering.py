@@ -22,27 +22,36 @@ def render_static_env_image(env: gym.Env, save_path: str, title: Optional[str] =
         # Reset to initial state for consistent rendering
         obs, _ = env.reset()
         
-        # For MiniGrid environments, we need to use rgb_array render mode
-        if hasattr(env.unwrapped, 'render'):
-            # Try different render modes for MiniGrid
-            try:
-                rgb_array = env.unwrapped.render(mode='rgb_array')
-            except:
+        # Check if this is a key_door environment wrapped in KeyDoorGymnasiumWrapper
+        is_key_door = hasattr(env, 'env') and hasattr(env.env, '_env_skeleton')
+        
+        if is_key_door:
+            # Use key_door's native rendering
+            rgb_array = env.render(mode='rgb_array')
+        else:
+            # For MiniGrid environments, we need to use rgb_array render mode
+            if hasattr(env.unwrapped, 'render'):
+                # Try different render modes for MiniGrid
                 try:
-                    rgb_array = env.render(mode='rgb_array')
+                    rgb_array = env.unwrapped.render(mode='rgb_array')
                 except:
-                    rgb_array = env.render()
-            
-            if rgb_array is not None and isinstance(rgb_array, np.ndarray):
-                plt.figure(figsize=(8, 8))
-                plt.imshow(rgb_array)
-                plt.axis('off')
-                if title:
-                    plt.title(title)
-                plt.tight_layout()
-                plt.savefig(save_path, dpi=150, bbox_inches='tight')
-                plt.close()
-                return
+                    try:
+                        rgb_array = env.render(mode='rgb_array')
+                    except:
+                        rgb_array = env.render()
+            else:
+                rgb_array = None
+        
+        if rgb_array is not None and isinstance(rgb_array, np.ndarray):
+            plt.figure(figsize=(8, 8))
+            plt.imshow(rgb_array)
+            plt.axis('off')
+            if title:
+                plt.title(title)
+            plt.tight_layout()
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            return
         
         # Fallback: use observation if it's an image
         if isinstance(obs, dict) and 'image' in obs:
