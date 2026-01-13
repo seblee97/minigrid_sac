@@ -63,7 +63,12 @@ class QNetwork(nn.Module):
 
     def _init_head(self):
         feat_dim = self._infer_feat_dim()
-        self.head = nn.Linear(feat_dim, self.n_actions)
+        # Q-network head: backbone -> FC layer -> output layer
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, self.n_actions)
+        )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         x = preprocess_obs(obs, obs_mode=self.obs_mode, n_obj=self.n_obj, n_col=self.n_col, n_state=self.n_state)
@@ -120,7 +125,12 @@ class QuantileQNetwork(nn.Module):
 
     def _init_head(self):
         feat_dim = self._infer_feat_dim()
-        self.head = nn.Linear(feat_dim, self.n_actions * self.n_quantiles)
+        # Quantile Q-network head: backbone -> FC layer -> output layer
+        self.head = nn.Sequential(
+            nn.Linear(feat_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, self.n_actions * self.n_quantiles)
+        )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         x = preprocess_obs(obs, obs_mode=self.obs_mode, n_obj=self.n_obj, n_col=self.n_col, n_state=self.n_state)
