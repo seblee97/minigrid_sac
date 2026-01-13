@@ -5,7 +5,7 @@ import time
 import gymnasium as gym
 import minigrid  # ensure MiniGrid envs register
 
-from rlgrid.envs.make_env import EnvConfig, make_vec_env
+from rlgrid.envs.make_env import EnvConfig, make_vec_env, _is_key_door_env
 from rlgrid.algos import PPO, PPOConfig, A2C, A2CConfig, DQN, DQNConfig, QRDQN, QRDQNConfig
 from rlgrid.common.logging import LogWriter, LogConfig
 from rlgrid.common.rendering import render_static_env_image
@@ -49,9 +49,28 @@ def main():
     # observability settings
     p.add_argument("--full-obs", action="store_true",
                help="use full observability instead of partial (makes learning easier but less robust)")
+    # episode timeout settings
+    p.add_argument("--max-episode-steps", type=int, default=None,
+               help="max steps per training episode (required for key_door to avoid infinite episodes, optional for MiniGrid which has defaults)")
+    
+    # key_door environment specific arguments
+    p.add_argument("--key-door-map-ascii", type=str, default=None,
+               help="path to ASCII map file for key_door environments")
+    p.add_argument("--key-door-map-yaml", type=str, default=None,
+               help="path to YAML config file for key_door environments")
+    p.add_argument("--key-door-map-yaml-test", type=str, default=None,
+               help="path to YAML config file for key_door TEST environments (optional, defaults to same as train)")
+    p.add_argument("--key-door-representation", type=str, 
+               choices=["agent_position", "pixel", "po_pixel"],
+               default="pixel",
+               help="observation representation for key_door environments")
     
     args = p.parse_args()
 
+    # Check if using key_door environment
+    is_key_door = _is_key_door_env(args.env_id)
+    if is_key_door and (args.key_door_map_ascii is None or args.key_door_map_yaml is None):
+        p.error(f"key_door environment '{args.env_id}' requires --key-door-map-ascii and --key-door-map-yaml")
 
     base_name = args.run_name or f"{args.algo}_{args.env_id}"
     ts_subdir = time.strftime("%d-%m-%Y-%H-%M")
@@ -69,6 +88,8 @@ def main():
             "seed": args.seed,
             "device": args.device,
             "n_envs": args.n_envs,
+            "is_key_door": is_key_door,
+            "key_door_representation": args.key_door_representation if is_key_door else None,
         },
     )
 
@@ -81,12 +102,44 @@ def main():
     eval_video_freq = int(args.eval_video_freq) if int(args.eval_video_freq) > 0 else int(args.video_freq)
 
     if eval_freq > 0 or eval_video_freq > 0:
-        eval_env = gym.make(args.env_id)
-        eval_env = make_minigrid_wrapped(eval_env, obs_mode=args.obs, full_obs=args.full_obs)
+        if is_key_door:
+            # Create key_door environment for evaluation
+            eval_cfg = EnvConfig(
+                env_id=args.env_id,
+                seed=args.seed,
+                n_envs=1,
+                key_door_map_ascii=args.key_door_map_ascii,
+                key_door_map_yaml=args.key_door_map_yaml,
+                key_door_map_yaml_test=args.key_door_map_yaml_test,  # Use test YAML if provided
+                key_door_representation=args.key_door_representation,
+            )
+            # make_vec_env returns vectorized env, we need to extract single env
+            eval_env_vec = make_vec_env(eval_cfg)
+            eval_env = eval_env_vec.envs[0]
+        else:
+            eval_env = gym.make(args.env_id)
+            eval_env = make_minigrid_wrapped(eval_env, obs_mode=args.obs, full_obs=args.full_obs)
 
     if args.render_static or eval_video_freq > 0:
-        render_env = gym.make(args.env_id, render_mode='rgb_array')
-        render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs, full_obs=args.full_obs)
+        if is_key_door:
+            # For key_door, we can use eval_env for rendering or create a new one
+            if eval_env is None:
+                render_cfg = EnvConfig(
+                    env_id=args.env_id,
+                    seed=args.seed,
+                    n_envs=1,
+                    key_door_map_ascii=args.key_door_map_ascii,
+                    key_door_map_yaml=args.key_door_map_yaml,
+                    key_door_map_yaml_test=args.key_door_map_yaml_test,  # Use test YAML if provided
+                    key_door_representation=args.key_door_representation,
+                )
+                render_env_vec = make_vec_env(render_cfg)
+                render_env = render_env_vec.envs[0]
+            else:
+                render_env = eval_env
+        else:
+            render_env = gym.make(args.env_id, render_mode='rgb_array')
+            render_env = make_minigrid_wrapped(render_env, obs_mode=args.obs, full_obs=args.full_obs)
 
     # Render static environment image at start
     if args.render_static and writer and render_env:
@@ -95,11 +148,35 @@ def main():
         print(f"Saved initial environment image to: {static_path}")
 
     if args.algo in ["ppo","a2c"]:
-        cfg_env = EnvConfig(env_id=args.env_id, seed=args.seed, n_envs=args.n_envs, obs_mode=args.obs, full_obs=args.full_obs)
+        cfg_env = EnvConfig(
+            env_id=args.env_id, 
+            seed=args.seed, 
+            n_envs=args.n_envs, 
+            obs_mode=args.obs, 
+            full_obs=args.full_obs,
+            max_episode_steps=args.max_episode_steps,
+            key_door_map_ascii=args.key_door_map_ascii,
+            key_door_map_yaml=args.key_door_map_yaml,
+            key_door_representation=args.key_door_representation,
+        )
         env = make_vec_env(cfg_env)
     else:
-        env = gym.make(args.env_id)
-        env = make_minigrid_wrapped(env, obs_mode=args.obs, full_obs=args.full_obs)
+        if is_key_door:
+            # For single-env algorithms (DQN, QRDQN), create a single key_door env
+            cfg_env = EnvConfig(
+                env_id=args.env_id,
+                seed=args.seed,
+                n_envs=1,
+                max_episode_steps=args.max_episode_steps,
+                key_door_map_ascii=args.key_door_map_ascii,
+                key_door_map_yaml=args.key_door_map_yaml,
+                key_door_representation=args.key_door_representation,
+            )
+            env_vec = make_vec_env(cfg_env)
+            env = env_vec.envs[0]
+        else:
+            env = gym.make(args.env_id)
+            env = make_minigrid_wrapped(env, obs_mode=args.obs, full_obs=args.full_obs)
 
     if args.algo == "ppo":
         cfg = PPOConfig(seed=args.seed, device=args.device, n_envs=args.n_envs)
